@@ -8,6 +8,7 @@ DD_RUN_DIR="$DD_DIR/run"
 export DD_BIN_DIR="$DD_DIR/bin/agent"
 DD_LOG_DIR="$APT_DIR/var/log/datadog"
 DD_CONF_DIR="$APT_DIR/etc/datadog-agent"
+DD_INSTALL_INFO="$DD_CONF_DIR/install_info"
 export DATADOG_CONF="$DD_CONF_DIR/datadog.yaml"
 
 # Update Env Vars with new paths for apt packages
@@ -26,14 +27,20 @@ DD_PROC_LOG="$DD_LOG_DIR/datadog-proc.log"
 # Move Datadog config files into place
 cp "$DATADOG_CONF.example" "$DATADOG_CONF"
 
-# Update the Datadog conf yaml with the correct conf.d and checks.d
+# Update the Datadog conf yaml with the correct conf.d and checks.d and the correct run path
 sed -i -e"s|^.*confd_path:.*$|confd_path: $DD_CONF_DIR/conf.d|" "$DATADOG_CONF"
-sed -i -e"s|^.*additional_checksd:.*$|additional_checksd: $DD_CONF_DIR/checks.d|" "$DATADOG_CONF"
+sed -i -e"s|^.*additional_checksd:.*$|additional_checksd: $DD_CONF_DIR/checks.d\nrun_path: $DD_RUN_DIR|" "$DATADOG_CONF"
+
+# Update the Datadog conf yaml to disable cloud provider metadata
+sed -i -e"s|^.*cloud_provider_metadata:.*$|cloud_provider_metadata: []|" "$DATADOG_CONF"
 
 # Include application's datadog configs
-APP_DATADOG="/app/datadog"
+APP_DATADOG_DEFAULT="/app/datadog"
+APP_DATADOG="${DD_HEROKU_CONF_FOLDER:=$APP_DATADOG_DEFAULT}"
 APP_DATADOG_CONF_DIR="$APP_DATADOG/conf.d"
+APP_DATADOG_CHECKS_DIR="$APP_DATADOG/checks.d"
 
+# Agent integrations configuration
 for file in "$APP_DATADOG_CONF_DIR"/*.yaml; do
   test -e "$file" || continue # avoid errors when glob doesn't match anything
   filename="$(basename -- "$file")"
@@ -43,12 +50,31 @@ for file in "$APP_DATADOG_CONF_DIR"/*.yaml; do
 done
 
 PSHOST=$(hostname )
+
+# Custom checks configuration
+for file in "$APP_DATADOG_CHECKS_DIR"/*.yaml; do
+  test -e "$file" || continue # avoid errors when glob doesn't match anything
+  cp "$file" "$DD_CONF_DIR/conf.d/"
+done
+
+# Custom checks code
+for file in "$APP_DATADOG_CHECKS_DIR"/*.py; do
+  test -e "$file" || continue # avoid errors when glob doesn't match anything
+  cp "$file" "$DD_CONF_DIR/checks.d/"
+done
+
 # Add tags to the config file
 TAGS="tags:\n  - procid:${PSHOST}"
 
 if [ -n "$APP_NAME" ]; then
   TAGS="$TAGS\n  - appname:$APP_NAME"
 fi
+
+# We want always to have the Dyno ID as a host alias to improve correlation
+export DD_HOST_ALIASES="$PSHOST"
+
+# Include install method
+echo -e "install_method:\n  tool: heroku\n  tool_version: heroku\n  installer_version: heroku-$BUILDPACKVERSION" > "$DD_INSTALL_INFO"
 
 # Uncomment APM configs and add the log file location.
 sed -i -e"s|^# apm_config:$|apm_config:|" "$DATADOG_CONF"
@@ -62,10 +88,8 @@ if [ "$DD_PROCESS_AGENT" == "true" ]; then
 fi
 
 # Set the right path for the log collector
-if [ "$DD_LOGS_ENABLED" == "true" ]; then
-  sed -i -e"s|^# logs_config:$|logs_config:|" "$DATADOG_CONF"
-  sed -i -e"s|^logs_config:$|logs_config:\n  run_path: $DD_RUN_DIR|" "$DATADOG_CONF"
-fi
+sed -i -e"s|^# logs_config:$|logs_config:|" "$DATADOG_CONF"
+sed -i -e"s|^logs_config:$|logs_config:\n  run_path: $DD_RUN_DIR|" "$DATADOG_CONF"
 
 # For a list of env vars to override datadog.yaml, see:
 # https://github.com/DataDog/datadog-agent/blob/master/pkg/config/config.go#L145
@@ -115,12 +139,12 @@ if [ "$DD_PYTHON_VERSION" = "3" ]; then
   if [ "$DD_AGENT_VERSION" != "$(echo -e "$DD_AGENT_BASE_VERSION\n$DD_AGENT_VERSION" | sort -V | head -n1)" ]; then
     # If Python version is 3, it has to be specified in the configuration file
     echo 'python_version: 3' >> $DATADOG_CONF
+  fi
     # Update symlinks to Python binaries
     ln -sfn "$DD_DIR"/embedded/bin/python3 "$DD_DIR"/embedded/bin/python
     ln -sfn "$DD_DIR"/embedded/bin/python3-config "$DD_DIR"/embedded/bin/python-config
     ln -sfn "$DD_DIR"/embedded/bin/pip3 "$DD_DIR"/embedded/bin/pip
     ln -sfn "$DD_DIR"/embedded/bin/pydoc3 "$DD_DIR"/embedded/bin/pydoc
-  fi
 fi
 
 # Ensure all check and library locations are findable in the Python path.
@@ -132,12 +156,10 @@ DD_PYTHONPATH="$DD_DIR/embedded/lib/$PYTHON_DIR/lib-tk:$DD_PYTHONPATH"
 DD_PYTHONPATH="$DD_DIR/embedded/lib/$PYTHON_DIR/lib-dynload:$DD_PYTHONPATH"
 DD_PYTHONPATH="$DD_DIR/bin/agent/dist:$DD_PYTHONPATH"
 
-# For Python2 we need to add explicitely pip and setuptools dependencies
-if [ "$DD_PYTHON_VERSION" = "2" ]; then
-  PIP_PATH=$(find "$DD_DIR/embedded/lib/$PYTHON_DIR/site-packages" -maxdepth 1 -name "pip*egg")
-  SETUPTOOLS_PATH=$(find "$DD_DIR/embedded/lib/$PYTHON_DIR/site-packages" -maxdepth 1 -name "setuptools*egg")
-  DD_PYTHONPATH="$DD_PYTHONPATH:$SETUPTOOLS_PATH:$PIP_PATH"
-fi
+#  We need to add explicitely pip and setuptools dependencies
+PIP_PATH=$(find "$DD_DIR/embedded/lib/$PYTHON_DIR/site-packages" -maxdepth 1 -name "pip*egg")
+SETUPTOOLS_PATH=$(find "$DD_DIR/embedded/lib/$PYTHON_DIR/site-packages" -maxdepth 1 -name "setuptools*egg")
+DD_PYTHONPATH="$DD_PYTHONPATH:$SETUPTOOLS_PATH:$PIP_PATH"
 
 # Export agent's PYTHONPATH be used by the agent-wrapper
 export DD_PYTHONPATH="$DD_DIR/embedded/lib:$DD_PYTHONPATH"
@@ -159,6 +181,7 @@ else
   DD_TAGS="$TAGS"
 fi
 
+export DD_VERSION="$DD_VERSION"
 export DD_TAGS="$DD_TAGS"
 if [ "$DD_LOG_LEVEL_LOWER" == "debug" ]; then
   echo "[DEBUG] Buildpack normalized tags: $DD_TAGS_NORMALIZED"
@@ -172,16 +195,19 @@ sed -i "s/^#   - role:database$/#   - role:database\n$DD_TAGS_YAML/" "$DATADOG_C
 # Agent versions 6.12 and later:
 sed -i "s/^\(## @param tags\)/$DD_TAGS_YAML\n\1/" "$DATADOG_CONF"
 
+# Export host type as dyno
+export DD_HEROKU_DYNO="true"
+
 # Execute the final run logic.
 if [ -n "$DISABLE_DATADOG_AGENT" ]; then
   echo "The Datadog Agent has been disabled. Unset the DISABLE_DATADOG_AGENT or set missing environment variables."
 else
   # Get the Agent version number
-  DD_VERSION="$(expr "$(bash -c "LD_LIBRARY_PATH=\"$DD_LD_LIBRARY_PATH\" $DD_BIN_DIR/agent version")" : 'Agent \([0-9]\+\.[0-9]\+.[0-9]\+\)')"
+  DATADOG_VERSION="$(expr "$(bash -c "LD_LIBRARY_PATH=\"$DD_LD_LIBRARY_PATH\" $DD_BIN_DIR/agent version")" : 'Agent \([0-9]\+\.[0-9]\+.[0-9]\+\)')"
 
   # Prior to Agent 6.4.1, the command is "start"
   RUN_VERSION="6.4.1"
-  if [ "$DD_VERSION" == "$(echo -e "$RUN_VERSION\n$DD_VERSION" | sort -V | head -n1)" ]; then
+  if [ "$DATADOG_VERSION" == "$(echo -e "$RUN_VERSION\n$DATADOG_VERSION" | sort -V | head -n1)" ]; then
     RUN_COMMAND="start"
   else
     RUN_COMMAND="run"

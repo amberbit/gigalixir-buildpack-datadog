@@ -11,8 +11,8 @@ set -o pipefail
 # set -x
 
 # Set agent pinned version
-DD_AGENT_PINNED_VERSION_6="6.19.0-1"
-DD_AGENT_PINNED_VERSION_7="7.19.0-1"
+DD_AGENT_PINNED_VERSION_6="6.34.0-1"
+DD_AGENT_PINNED_VERSION_7="7.34.0-1"
 
 # Parse and derive params
 BUILD_DIR=$1
@@ -20,42 +20,16 @@ CACHE_DIR=$2
 ENV_DIR=$3
 BUILDPACK_DIR=$(cd "$(dirname "$0")"; cd ..; pwd)
 
-# Load formating tools
-source "$BUILDPACK_DIR/bin/common.sh"
+# Store which STACK we are running on in the cache to bust the cache if it changes
+if [ -f $CACHE_DIR/.apt/STACK ]; then
+  CACHED_STACK=$(cat "$CACHE_DIR/.apt/STACK")
+else
+  CACHED_STACK=$STACK
+fi
 
-# Setup apt environment
-APT_DIR="$BUILD_DIR/.apt"
-APT_CACHE_DIR="$CACHE_DIR/apt/cache"
-APT_STATE_DIR="$CACHE_DIR/apt/state"
-APT_REPO_FILE="$BUILDPACK_DIR/etc/datadog.list"
-APT_REPO_FILE_7="$BUILDPACK_DIR/etc/datadog7.list"
-APT_OPTIONS="-o debug::nolocking=true -o dir::cache=$APT_CACHE_DIR -o dir::state=$APT_STATE_DIR"
-
-# Create build and run environment
-mkdir -p "$APT_CACHE_DIR/archives/partial"
-mkdir -p "$APT_STATE_DIR/lists/partial"
-mkdir -p "$APT_DIR"
-
-# Install dependencies
-topic "Updating apt caches for dependencies"
-apt-get $APT_OPTIONS update | indent
-
-topic "Installing dependencies"
-DEPS="libpci-dev libpci3 libsensors4 libsensors4-dev libsnmp-base libsnmp30"
-apt-get $APT_OPTIONS -y --force-yes -d install --reinstall --no-install-recommends $DEPS | indent
-IFS=" " read -a DEP_PKGS <<< "$DEPS"
-for DEP in ${DEP_PKGS[@]}; do
-  echo "Installing $DEP" | indent
-  ls -t "$APT_CACHE_DIR"/archives/"$DEP"\_*.deb | head -1 | xargs -i dpkg -x '{}' "$APT_DIR"
-done
-
-# Install GPG key
-topic "Install gpg key for Datadog APT Repository"
-APT_KEYRING="$CACHE_DIR/apt/trusted.gpg"
-GPG_KEY_FILE="$BUILDPACK_DIR/etc/datadog.gpg"
-GPG_HOME_DIR="$BUILD_DIR/.gnupg"
-mkdir -p "$GPG_HOME_DIR"
-gpg --ignore-time-conflict --no-options --no-default-keyring --homedir "$GPG_HOME_DIR" --keyring "$APT_KEYRING" --import "$GPG_KEY_FILE" | indent
+# Ensure we store the STACK in the cache for next time.
+mkdir -p "$CACHE_DIR/.apt"
+echo "$STACK" > "$CACHE_DIR/.apt/STACK"
 
 # If a version hasn't been specified, use the pinned version
 if [ -f "$ENV_DIR/DD_AGENT_VERSION" ]; then
@@ -73,25 +47,89 @@ else
   fi
 fi
 
+# Store which Datadog agent we deployed in the previous compile to bust the cache if it changes
+if [ -f $CACHE_DIR/.apt/DD_AGENT_VERSION ]; then
+  CACHED_DD_AGENT_VERSION=$(cat "$CACHE_DIR/.apt/DD_AGENT_VERSION")
+else
+  CACHED_DD_AGENT_VERSION=$DD_AGENT_VERSION
+fi
+
+# Ensure we store the agent version in the cache for next time.
+echo "$DD_AGENT_VERSION" > "$CACHE_DIR/.apt/DD_AGENT_VERSION"
+
+# Load formating tools
+source "$BUILDPACK_DIR/bin/common.sh"
+
+# Setup apt environment
+APT_DIR="$BUILD_DIR/.apt"
+APT_CACHE_DIR="$CACHE_DIR/apt/cache"
+APT_STATE_DIR="$CACHE_DIR/apt/state"
+APT_REPO_FILE="$BUILDPACK_DIR/etc/datadog.list"
+APT_REPO_FILE_7="$BUILDPACK_DIR/etc/datadog7.list"
+APT_OPTIONS="-o debug::nolocking=true -o dir::cache=$APT_CACHE_DIR -o dir::state=$APT_STATE_DIR"
+
+# Create build and run environment
+mkdir -p "$APT_CACHE_DIR/archives/partial"
+mkdir -p "$APT_STATE_DIR/lists/partial"
+mkdir -p "$APT_DIR"
+
+if [[ $CACHED_STACK == $STACK ]] && [[ $CACHED_DD_AGENT_VERSION == $DD_AGENT_VERSION ]]; then
+  # STACK nor DD_AGENT_VERSION have changed, reusing cache
+  topic "Stack version and agent version haven't changed, reusing cache"
+else
+  # STACK or DD_AGENT_VERSION changed, clean up APT cache
+  topic "Detected Stack and/or agent version changes, flushing cache"
+  rm -rf $APT_CACHE_DIR
+  rm -rf $APT_STATE_DIR
+  mkdir -p "$APT_CACHE_DIR/archives/partial"
+  mkdir -p "$APT_STATE_DIR/lists/partial"
+fi
+
+# Install GPG key
+topic "Install gpg key for Datadog APT Repository"
+DATADOG_APT_KEYRING="$BUILDPACK_DIR/datadog-archive-keyring.gpg"
+DATADOG_APT_KEYS=("DATADOG_APT_KEY_CURRENT.public" "DATADOG_APT_KEY_F14F620E.public" "DATADOG_APT_KEY_382E94DE.public")
+DATADOG_APT_KEYS_URL="https://keys.datadoghq.com"
+GPG_HOME_DIR="$BUILD_DIR/.gnupg"
+mkdir -p "$GPG_HOME_DIR"
+touch $DATADOG_APT_KEYRING
+
+for key in "${DATADOG_APT_KEYS[@]}"; do
+  curl -o "/tmp/${key}" "${DATADOG_APT_KEYS_URL}/${key}" | indent
+  gpg --ignore-time-conflict --no-options --no-default-keyring --homedir "$GPG_HOME_DIR" --keyring "$DATADOG_APT_KEYRING" --import "/tmp/${key}" | indent
+done
+
 # Prior to Agent 6.14 there was only 1 python version
 DD_AGENT_BASE_VERSION="6.14"
 if [ "$DD_AGENT_VERSION" == "$(echo -e "$DD_AGENT_BASE_VERSION\n$DD_AGENT_VERSION" | sort -V | head -n1)" ]; then
-  NUM_PYTHON="1"
+  DD_PYTHON_VERSION="2"
 else
-  NUM_PYTHON="2"
+  if [ -f "$ENV_DIR/DD_PYTHON_VERSION" ]; then
+    DD_PYTHON_VERSION=$(cat "$ENV_DIR/DD_PYTHON_VERSION")
+    if [ "$DD_PYTHON_VERSION" != "2" ] && [ "$DD_PYTHON_VERSION" != "3" ]; then
+      topic "ERROR: Wrong Python version: \"$DD_PYTHON_VERSION\"."
+      echo "Set DD_PYTHON_VERSION to either 2 or 3." | indent
+      exit 1
+    fi
+  else
+    DD_PYTHON_VERSION="2" # if not specified, we default to Python 2
+  fi
 fi
 
 # Agent 7 onwards is Python3 only and repo file is different
 DD_AGENT_BASE_VERSION="7"
 if [ "$DD_AGENT_VERSION" != "$(echo -e "$DD_AGENT_BASE_VERSION\n$DD_AGENT_VERSION" | sort -V | head -n1)" ]; then
-  NUM_PYTHON="1"
+  DD_PYTHON_VERSION="3"
   # Modify repo file to point to agent 7
   cp "$APT_REPO_FILE_7" "$APT_REPO_FILE"
 fi
 
+# Replace the placeholder in the source file by the actual path to the constructed keyring
+sed -i "s|SIGNED_BY_PLACEHOLDER|${DATADOG_APT_KEYRING}|" $APT_REPO_FILE
+
 # Install Datadog Agent
 topic "Updating apt caches for Datadog Agent"
-APT_OPTIONS="$APT_OPTIONS -o Dir::Etc::Trusted=$APT_KEYRING -o Dir::Etc::SourceList=$APT_REPO_FILE"
+APT_OPTIONS="$APT_OPTIONS -o Dir::Etc::SourceList=$APT_REPO_FILE"
 apt-get $APT_OPTIONS update | indent
 
 # Accommodate for earlier pinned versions. Give deprecation warning.
@@ -104,22 +142,32 @@ fi
 
 AGENT_VERSIONS=$(apt-cache $APT_OPTIONS show datadog-agent | grep "Version: ")
 AGENT_VERSIONS=$(sed 's/Version: 1://g' <<<"$AGENT_VERSIONS")
+AGENT_HEROKU_VERSIONS=$(apt-cache $APT_OPTIONS show datadog-heroku-agent | grep "Version: ")
+AGENT_HEROKU_VERSIONS=$(sed 's/Version: 1://g' <<<"$AGENT_HEROKU_VERSIONS")
 
-# If specified version doesn't exist, list available versions.
-if [ -z $(echo "$AGENT_VERSIONS" | grep -x "$DD_AGENT_VERSION") ]; then
-  topic "ERROR: Version \"$DD_AGENT_VERSION\" was not found."
-  echo "Available versions:" | indent
-  echo "$AGENT_VERSIONS" | indent
-  exit 1
+PACKAGE_NAME="datadog-heroku-agent"
+
+# If specified version doesn't exist as heroku build, try regular agent
+if [ -z $(echo "$AGENT_HEROKU_VERSIONS" | grep -x "$DD_AGENT_VERSION") ]; then
+  # If specified version doesn't exist as regular build either, err and quit
+  if [ -z $(echo "$AGENT_VERSIONS" | grep -x "$DD_AGENT_VERSION") ]; then
+    topic "ERROR: Version \"$DD_AGENT_VERSION\" was not found."
+    echo "Available Heroku versions:" | indent
+    echo "$AGENT_HEROKU_VERSIONS" | indent
+    echo "Available regular Agent versions:" | indent
+    echo "$AGENT_VERSIONS" | indent
+    exit 1
+  fi
+  PACKAGE_NAME="datadog-agent"
 fi
 
 # Set the  specified version.
-PACKAGE="datadog-agent=1:$DD_AGENT_VERSION"
+PACKAGE="$PACKAGE_NAME=1:$DD_AGENT_VERSION"
 
 topic "Downloading Datadog Agent $DD_AGENT_VERSION"
 apt-get $APT_OPTIONS -y --force-yes -d install --reinstall --no-install-recommends "$PACKAGE" | indent
 
-DPKG_STUB="$APT_CACHE_DIR/archives/datadog-agent_1%3a"
+DPKG_STUB="$APT_CACHE_DIR/archives/${PACKAGE_NAME}_1%3a"
 if [ -z $DD_AGENT_VERSION ]; then
   DEB=$(ls -t "$DPKG_STUB"*.deb | head -n 1)
   DD_AGENT_VERSION=${DEB:${#DPKG_STUB}:(${#DEB}-${#DPKG_STUB}-10)}
@@ -134,10 +182,18 @@ dpkg -x "$DEB" "$APT_DIR"
 # Removing unneeded content
 rm -rf "$APT_DIR"/opt/datadog-agent/sources \
        "$APT_DIR"/opt/datadog-agent/embedded/share/doc \
-       "$APT_DIR"/opt/datadog-agent/embedded/share/man
+       "$APT_DIR"/opt/datadog-agent/embedded/share/man \
+       "$APT_DIR"/opt/datadog-agent/embedded/.installed_by_pkg.txt
 
 # Remove Cryptodome Selftest
 rm -rf "$APT_DIR"/opt/datadog-agent/embedded/lib/python*/site-packages/Cryptodome/SelfTest
+
+# Remove unused botocore data
+for i in `ls $APT_DIR/opt/datadog-agent/embedded/lib/python*/site-packages/botocore/data`; do
+  if [ "$i" != "s3" ]; then
+    rm -rf "$APT_DIR"/opt/datadog-agent/embedded/lib/python*/site-packages/botocore/data/"$i"
+  fi
+done
 
 # Remove unnedded Python packages
 for i in "${DELETE_PACKAGES[@]}"; do
@@ -146,6 +202,15 @@ done
 
 # Remove the system-probe binary, only needed for network performance monitoring
 rm -rf "$APT_DIR/opt/datadog-agent/embedded/bin/system-probe"
+rm -rf "$APT_DIR"/opt/datadog-agent/embedded/lib/libbcc*
+rm -rf "$APT_DIR"/opt/datadog-agent/embedded/nikos/
+
+# Remove static libraries
+rm -rf "$APT_DIR"/opt/datadog-agent/embedded/lib/*.a
+rm -rf "$APT_DIR"/opt/datadog-agent/embedded/lib/python*/config*/*.a
+
+# Remove the Security agent
+rm -rf "$APT_DIR/opt/datadog-agent/embedded/bin/security-agent"
 
 if [ -f "$ENV_DIR/DD_APM_ENABLED" ]; then
   DD_APM_ENABLED=$(cat "$ENV_DIR/DD_APM_ENABLED")
@@ -164,40 +229,27 @@ else
   rm -rf "$APT_DIR/opt/datadog-agent/embedded/bin/process-agent"
 fi
 
-# If we have 2 python versions, we remove the one that wasn't selected
-if [ "$NUM_PYTHON" = "2" ]; then
-  if [ -f "$ENV_DIR/DD_PYTHON_VERSION" ]; then
-    DD_PYTHON_VERSION=$(cat "$ENV_DIR/DD_PYTHON_VERSION")
-    if [ "$DD_PYTHON_VERSION" != "2" ] && [ "$DD_PYTHON_VERSION" != "3" ]; then
-      topic "ERROR: Wrong Python version: \"$DD_PYTHON_VERSION\"."
-      echo "Set DD_PYTHON_VERSION to either 2 or 3." | indent
-      exit 1
-    fi
-  else
-    DD_PYTHON_VERSION="2" # if not specified, we default to Python 2
-  fi
-
-  # We remove the unneeded version of Python
-  if [ "$DD_PYTHON_VERSION" = "2" ]; then
-    topic "*********************************** WARNING ************************************"
-    echo "Python 2 will be deprecated soon. Agent 7.x ships with Python 3 only." | indent
-    echo "If you don't run custom checks or those are Python 3 ready, you can" | indent
-    echo "move to Python 3 now by setting DD_PYTHON_VERSION to 3 and compiling your slug." | indent
-    echo "********************************************************************************" | indent
-    rm -rf "$APT_DIR"/opt/datadog-agent/embedded/lib/python3.*
-    rm -rf "$APT_DIR"/opt/datadog-agent/embedded/lib/libpython3*
-    rm "$APT_DIR"/opt/datadog-agent/embedded/bin/pip3*
-    rm "$APT_DIR"/opt/datadog-agent/embedded/bin/python3*
-    rm "$APT_DIR"/opt/datadog-agent/embedded/bin/pydoc3*
-  fi
-  if [ "$DD_PYTHON_VERSION" = "3" ]; then
-    rm -rf "$APT_DIR"/opt/datadog-agent/embedded/lib/python2.*
-    rm -rf "$APT_DIR"/opt/datadog-agent/embedded/lib/libpython2*
-    rm "$APT_DIR"/opt/datadog-agent/embedded/bin/pip2*
-    rm "$APT_DIR"/opt/datadog-agent/embedded/bin/python2*
-    rm "$APT_DIR"/opt/datadog-agent/embedded/bin/pydoc*
-  fi
+# We remove the unneeded version of Python
+if [ "$DD_PYTHON_VERSION" = "2" ]; then
+  topic "*********************************** WARNING ************************************"
+  echo "Python 2 will be deprecated soon. Agent 7.x ships with Python 3 only." | indent
+  echo "If you don't run custom checks or those are Python 3 ready, you can" | indent
+  echo "move to Python 3 now by setting DD_PYTHON_VERSION to 3 and compiling your slug." | indent
+  echo "********************************************************************************" | indent
+  rm -rf "$APT_DIR"/opt/datadog-agent/embedded/lib/python3.* || true
+  rm -rf "$APT_DIR"/opt/datadog-agent/embedded/lib/libpython3* || true
+  rm -f "$APT_DIR"/opt/datadog-agent/embedded/bin/pip3* || true
+  rm -f "$APT_DIR"/opt/datadog-agent/embedded/bin/python3* || true
+  rm -f "$APT_DIR"/opt/datadog-agent/embedded/bin/pydoc3* || true
 fi
+if [ "$DD_PYTHON_VERSION" = "3" ]; then
+  rm -rf "$APT_DIR"/opt/datadog-agent/embedded/lib/python2.* || true
+  rm -rf "$APT_DIR"/opt/datadog-agent/embedded/lib/libpython2* || true
+  rm -f "$APT_DIR"/opt/datadog-agent/embedded/bin/pip2* || true
+  rm -f "$APT_DIR"/opt/datadog-agent/embedded/bin/python2* || true
+  rm -f "$APT_DIR"/opt/datadog-agent/embedded/bin/pydoc* || true
+fi
+
 
 # Rewrite package-config files
 find "$APT_DIR" -type f -ipath '*/pkgconfig/*.pc' | xargs --no-run-if-empty -n 1 sed -i -e 's!^prefix=\(.*\)$!prefix='"$APT_DIR"'\1!g'

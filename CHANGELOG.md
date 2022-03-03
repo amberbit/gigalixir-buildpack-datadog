@@ -9,6 +9,135 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 - Non-https repo url and apt fetching
 
+- The `process-agent` increased in size between 7.31 and 7.32. We are aware the increasing slug size with this buildpack presents issues for some users, and we are working on providing a long term solution. For updates on this you can follow [issue 269 in Github](https://github.com/DataDog/heroku-buildpack-datadog/issues/269)
+
+## [2.0] - 2022-03-02
+
+### Added
+- Specific Heroku Datadog Agent build (starting with `6.34.0` and `7.34.0`) is now used
+- Datadog agent pinned versions are now `6.34.0` and `7.34.0`
+
+### Fixed
+- Community integrations can now be installed properly when the Python versions for the agent and the system are different
+
+## [1.33] - 2022-01-27
+
+### Added
+- Datadog agent pinned versions are now `6.33.0` and `7.33.0`
+- Custom checks are now easier to set up. (https://docs.datadoghq.com/agent/basic_agent_usage/heroku/#enabling-custom-checks)
+
+## [1.32] - 2021-12-27
+
+### Security
+- Agents `6.32.4` and `7.32.4` remove all dependencies on log4j and use java.util.logging instead.
+
+### Added
+- Datadog agent pinned versions are now `6.32.4` and `7.32.4`
+
+## [1.31] - 2021-12-16
+
+### Security
+
+-  Agents `6.32.3` and `7.33.3` upgrade the log4j dependency to 2.12.2 in JMXFetch to fully address [CVE-2021-44228](https://nvd.nist.gov/vuln/detail/CVE-2021-44228) and [CVE-2021-45046](https://nvd.nist.gov/vuln/detail/CVE-2021-45046)
+
+### Added
+- Datadog agent pinned versions are now `6.32.3` and `7.32.3`
+
+## [1.30] - 2021-12-13
+
+### Security
+- Agents `6.32.2` and `7.32.2` set `-Dlog4j2.formatMsgNoLookups=True` when starting the JMXfetch process to mitigate the vulnerability described in [CVE-2021-44228](https://nvd.nist.gov/vuln/detail/CVE-2021-44228)
+
+### Added
+- Datadog agent pinned versions are now `6.32.2` and `7.32.2`
+
+## [1.29] - 2021-09-23
+
+### Added
+- Datadog agent pinned versions are now `6.31.0` and `7.31.0`
+
+## [1.28] - 2021-07-01
+
+### Fixed
+- Fixed memcached integration for Python 3
+
+## [1.27] - 2021-06-28
+
+### Added
+- Datadog agent pinned versions are now `6.29.0` and `7.29.0`
+- The Dyno ID is now sent as host alias (requires Agent 6.29.0/7.29.0 or newer)
+
+## [1.26] - 2021-05-28
+
+### Added
+- Datadog agent pinned versions are now `6.28.0` and `7.28.0`
+
+### Changed
+- Apt signing keys are now obtained from keys.datadoghq.com
+
+## [1.25] - 2021-04-19
+
+### Added
+- Datadog agent pinned versions are now `6.27.0` and `7.27.0`
+
+### Fixed
+- HTTPS repo fetching
+
+## [1.24] - 2021-03-03
+
+### Added
+- Datadog agent pinned versions are now `6.26.0` and `7.26.0`
+- Datadog configuration path can now be configured with the `DD_HEROKU_CONF_FOLDER` environment variable
+
+## [1.23] - 2021-01-20
+
+### Added
+- Datadog agent pinned versions are now `6.25.0` and `7.25.0`
+- Heroku APT cache is now cleaned up automatically when DD_AGENT_VERSION changes
+
+## [1.22] - 2020-12-09
+
+### Added
+- Datadog agent pinned versions are now `6.24.0` and `7.24.0`
+- Heroku APT cache is now cleaned up when changing stacks
+- Heroku-20 stack is now supported
+
+### Removed
+- Removed Datadog agent unneeded dependencies
+
+## [1.21] - 2020-10-09
+
+### Added
+- Datadog agent pinned versions are now `6.23.0` and `7.23.0`
+
+### Change
+- Buildpack name reported by `bin/detect` is now "Datadog" instead of "Sysstat"
+
+## [1.20] - 2020-09-09
+
+### Changed
+- Removed the security-agent and system-probe dependencies to reduce slug size
+
+### Fixed
+- version-history.json is now created successfully, even if DD_LOGS_ENABLED="false"
+
+## [1.19] - 2020-08-27
+
+### Changed
+- Agent now reports `datadog.heroku_agent.running` metric instead of `datadog.agent.running` for agent versions `6/7.22` and newer, to help customers identify which agents are reporting from a Heroku dyno.
+
+### Fixed
+- Buildpack now works correctly with agent versions 7.21.x
+
+### Added
+- Datadog agent pinned versions are now `6.22.0` and `7.22.0`
+- DD_VERSION can now be set as part of the `prerun.sh` script
+
+## [1.18] - 2020-06-17
+
+### Added
+- Datadog agent pinned versions are now `6.20.2` and `7.20.2`
+
 ## [1.17-gigalixir] - 2020-06-06
 
 ### Changed
